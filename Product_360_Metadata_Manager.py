@@ -12,14 +12,13 @@ ARCHIVE_BASE = os.path.join(os.path.expanduser("~/Desktop"), "Product 360 layout
 CONFIG_FILE = os.path.join(ARCHIVE_BASE, "environments.json")
 LOG_FILE = os.path.join(ARCHIVE_BASE, "layout_manager.log")
 
-# Relative paths to the three metadata files
+# Updated SOURCE_FILES with corrected path
 SOURCE_FILES = {
     "workbench.xmi": os.path.join(".metadata", ".plugins", "org.eclipse.e4.workbench", "workbench.xmi"),
     "org.eclipse.ui.workbench.prefs": os.path.join(".metadata", ".plugins", "org.eclipse.core.runtime", ".settings", "org.eclipse.ui.workbench.prefs"),
-    "savedTableConfigs.xml": os.path.join(".metadata", ".plugins", "com.heiler.ppm.std.ui", ".settings", "savedTableConfigs.xml")
+    "savedTableConfigs.xml": os.path.join(".metadata", ".plugins", "com.heiler.ppm.std.ui", "savedTableConfigs.xml")
 }
 
-# Folders to exclude during search
 EXCLUDED_DIRS = {"Windows", "Program Files", "Program Files (x86)", "System Volume Information", "$RECYCLE.BIN"}
 
 # Setup logging
@@ -29,6 +28,7 @@ logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s -
 def find_installations():
     """Search C: for pim-desktop.exe, excluding system folders."""
     installations = []
+    messagebox.showinfo("Search Starting", "Searching for Product 360 installations... This may take a few moments.")
     for root, dirs, files in os.walk("C:\\", topdown=True):
         dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
         if "pim-desktop.exe" in files:
@@ -49,44 +49,31 @@ def extract_workspace_dir(install_folder):
                     return os.path.expandvars(line.split("=", 1)[1].strip())
     return None
 
-def infer_environment(workspace_dir):
-    """Infer environment name from WORKSPACE_DIR."""
-    path_lower = workspace_dir.lower()
-    if "prod" in path_lower or "prd" in path_lower:
-        return "Prod"
-    elif "qa" in path_lower or "pimqa" in path_lower:
-        return "QA"
-    elif "dev" in path_lower or "pimdev" in path_lower:
-        return "Dev"
-    return "Unknown"
-
 def load_or_find_environments():
-    """Load environments from config or find them."""
+    """Load environments from config or find them, with user prompt if config exists."""
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
-    
+        if messagebox.askyesno("Use Saved Locations", "Use previously saved locations? (No = Search again)"):
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        else:
+            return search_and_save_environments()
+    else:
+        return search_and_save_environments()
+
+def search_and_save_environments():
+    """Search for installations and save to config."""
     environments = {}
-    env_counters = {}
     for install_folder in find_installations():
         workspace_dir = extract_workspace_dir(install_folder)
         if workspace_dir:
-            env = infer_environment(workspace_dir)
-            if env in environments:
-                env_counters[env] = env_counters.get(env, 1) + 1
-                unique_env = f"{env}_{env_counters[env]}"
-            else:
-                unique_env = env
-            environments[unique_env] = workspace_dir
-    
-    # Save to config file
-    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+            folder_name = os.path.basename(install_folder)
+            environments[folder_name] = workspace_dir
     with open(CONFIG_FILE, "w") as f:
         json.dump(environments, f, indent=4)
     return environments
 
-def backup_files(env, environments):
-    """Backup metadata files for the selected environment."""
+def backup_files(env, environments, date_dropdown, selected_date):
+    """Backup metadata files and refresh dates."""
     workspace_dir = environments[env]
     today = date.today().isoformat()
     backup_folder = os.path.join(ARCHIVE_BASE, env, today)
@@ -101,9 +88,10 @@ def backup_files(env, environments):
         else:
             logging.warning(f"Source file not found: {source_path}")
     messagebox.showinfo("Backup Complete", f"Files backed up to {env}/{today}")
+    update_date_dropdown(env, date_dropdown, selected_date)
 
 def clear_metadata(env, environments):
-    """Delete the .metadata folder for the selected environment."""
+    """Delete the .metadata folder."""
     workspace_dir = environments[env]
     metadata_folder = os.path.join(workspace_dir, ".metadata")
     if not os.path.exists(metadata_folder):
@@ -127,7 +115,6 @@ def restore_files(env, date_str, environments):
         messagebox.showerror("Restore Error", f"No backup found for {env} on {date_str}")
         return
     
-    # Check for existing files
     overwrite = None
     for filename, rel_path in SOURCE_FILES.items():
         dest_path = os.path.join(workspace_dir, rel_path)
@@ -139,7 +126,6 @@ def restore_files(env, date_str, environments):
                 return
             break
     
-    # Perform restore
     for filename, rel_path in SOURCE_FILES.items():
         source_file = os.path.join(backup_folder, filename)
         dest_path = os.path.join(workspace_dir, rel_path)
@@ -152,7 +138,7 @@ def restore_files(env, date_str, environments):
     messagebox.showinfo("Restore Complete", f"Files restored for {env} from {date_str}")
 
 def update_date_dropdown(env, date_dropdown, selected_date):
-    """Update the backup date dropdown based on the selected environment."""
+    """Update the backup date dropdown."""
     env_archive = os.path.join(ARCHIVE_BASE, env)
     if os.path.exists(env_archive):
         dates = [d for d in os.listdir(env_archive) if os.path.isdir(os.path.join(env_archive, d))]
@@ -169,18 +155,16 @@ def add_manual_environment(environments, env_dropdown, selected_env):
     if folder:
         workspace_dir = extract_workspace_dir(folder)
         if workspace_dir:
-            env = infer_environment(workspace_dir)
-            if env in environments:
-                counter = sum(1 for e in environments if e.startswith(env)) + 1
-                unique_env = f"{env}_{counter}"
+            folder_name = os.path.basename(folder)
+            if folder_name in environments:
+                messagebox.showerror("Duplicate", f"{folder_name} already exists.")
             else:
-                unique_env = env
-            environments[unique_env] = workspace_dir
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(environments, f, indent=4)
-            env_dropdown["values"] = list(environments.keys())
-            selected_env.set(unique_env)
-            messagebox.showinfo("Environment Added", f"Added {unique_env}: {workspace_dir}")
+                environments[folder_name] = workspace_dir
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(environments, f, indent=4)
+                env_dropdown["values"] = list(environments.keys())
+                selected_env.set(folder_name)
+                messagebox.showinfo("Environment Added", f"Added {folder_name}: {workspace_dir}")
         else:
             messagebox.showerror("Invalid Folder", "No valid WORKSPACE_DIR found in pim-desktop.cmd")
 
@@ -190,7 +174,6 @@ def create_gui(environments):
     root.title("Product 360 Layout Manager")
     root.geometry("400x200")
 
-    # Environment selection
     ttk.Label(root, text="Select Environment:").pack(pady=5)
     selected_env = StringVar()
     env_dropdown = ttk.Combobox(root, textvariable=selected_env, values=list(environments.keys()))
@@ -198,7 +181,6 @@ def create_gui(environments):
     if environments:
         selected_env.set(list(environments.keys())[0])
 
-    # Date selection
     ttk.Label(root, text="Select Backup Date:").pack(pady=5)
     selected_date = StringVar()
     date_dropdown = ttk.Combobox(root, textvariable=selected_date)
@@ -206,13 +188,11 @@ def create_gui(environments):
     if environments:
         update_date_dropdown(selected_env.get(), date_dropdown, selected_date)
 
-    # Update dates when environment changes
     def on_env_change(*args):
         update_date_dropdown(selected_env.get(), date_dropdown, selected_date)
     selected_env.trace("w", on_env_change)
 
-    # Buttons
-    ttk.Button(root, text="Backup Now", command=lambda: backup_files(selected_env.get(), environments)).pack(pady=5)
+    ttk.Button(root, text="Backup Now", command=lambda: backup_files(selected_env.get(), environments, date_dropdown, selected_date)).pack(pady=5)
     ttk.Button(root, text="Clear Metadata", command=lambda: clear_metadata(selected_env.get(), environments)).pack(pady=5)
     ttk.Button(root, text="Restore Metadata", command=lambda: restore_files(selected_env.get(), selected_date.get(), environments)).pack(pady=5)
     ttk.Button(root, text="Add Manual Location", command=lambda: add_manual_environment(environments, env_dropdown, selected_env)).pack(pady=5)
