@@ -29,7 +29,7 @@ def find_installations(root_window):
     installations = []
     messagebox.showinfo("Search Starting", "Searching for Product 360 installations... This may take a few moments.", parent=root_window)
     for root, dirs, files in os.walk("C:\\", topdown=True):
-        if any(excluded.lower() in root.lower() for excluded in EXCLUDED_DIRS):
+        if any(excluded.lower() == os.path.basename(root).lower() for excluded in EXCLUDED_DIRS):
             continue
         if "pim-desktop.exe" in files:
             installations.append(root)
@@ -42,10 +42,16 @@ def extract_workspace_dir(install_folder):
         with open(cmd_path, "r") as f:
             for line in f:
                 if line.strip().startswith("SET WORKSPACE_DIR="):
-                    return os.path.expandvars(line.split("=", 1)[1].strip())
+                    parts = line.split("=", 1)
+                    value = parts[1].strip()
+                    expanded_value = os.path.expandvars(value)
+                    return expanded_value
     return None
 
-def load_or_find_environments(root_window):
+        response = messagebox.askyesno("Use Saved Locations", "Use previously saved locations? (No = Search again)", parent=root_window)
+        if response is None:
+            return {}
+        elif response:
     """Load environments from config or find them."""
     if os.path.exists(CONFIG_FILE):
         if messagebox.askyesno("Use Saved Locations", "Use previously saved locations? (No = Search again)", parent=root_window):
@@ -86,7 +92,7 @@ def backup_files(env, environments, date_dropdown, selected_date, root_window):
     for filename, rel_path in SOURCE_FILES.items():
         source_path = os.path.join(workspace_dir, rel_path)
         dest_file = os.path.join(backup_folder, filename)
-        if os.path.exists(source_path):
+        if os.path.exists(source_path) and os.path.isfile(source_path):
             shutil.copy2(source_path, dest_file)
             logging.info(f"Backed up {source_path} to {dest_file}")
         else:
@@ -107,6 +113,9 @@ def clear_metadata(env, environments, root_window):
             shutil.rmtree(metadata_folder)
             logging.info(f"Deleted {metadata_folder}")
             messagebox.showinfo("Clear Complete", f".metadata folder for {env} deleted", parent=root_window)
+        except PermissionError as e:
+            logging.error(f"Permission error deleting {metadata_folder}: {e}")
+            messagebox.showerror("Clear Error", f"Permission Error: {e}", parent=root_window)
         except Exception as e:
             logging.error(f"Error deleting {metadata_folder}: {e}")
             messagebox.showerror("Clear Error", f"Error: {e}", parent=root_window)
@@ -123,24 +132,23 @@ def restore_files(env, date_str, environments, root_window):
     overwrite = None
     for filename, rel_path in SOURCE_FILES.items():
         dest_path = os.path.join(workspace_dir, rel_path)
-        if os.path.exists(dest_path):
-            if overwrite is None:
-                overwrite = messagebox.askyesno("Overwrite Files", "Some files exist. Overwrite them?", parent=root_window)
             if not overwrite:
+                messagebox.showinfo("Restore Cancelled", "Restore operation cancelled.", parent=root_window)
+                return
                 messagebox.showinfo("Restore Cancelled", "Restore operation cancelled.", parent=root_window)
                 return
             break
     
     for filename, rel_path in SOURCE_FILES.items():
+    os.makedirs(os.path.dirname(next(iter(SOURCE_FILES.values()))), exist_ok=True)
+    for filename, rel_path in SOURCE_FILES.items():
         source_file = os.path.join(backup_folder, filename)
         dest_path = os.path.join(workspace_dir, rel_path)
         if os.path.exists(source_file):
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             shutil.copy2(source_file, dest_path)
             logging.info(f"Restored {source_file} to {dest_path}")
         else:
             logging.warning(f"Backup file missing: {source_file}")
-    messagebox.showinfo("Restore Complete", f"Files restored for {env} from {date_str}", parent=root_window)
 
 def update_date_dropdown(env, date_dropdown, selected_date, environments):
     """Update the backup date dropdown with correct dates."""
@@ -149,7 +157,7 @@ def update_date_dropdown(env, date_dropdown, selected_date, environments):
         env_archive = os.path.join(ARCHIVE_BASE, backup_name)
         if os.path.exists(env_archive):
             dates = [d for d in os.listdir(env_archive) if os.path.isdir(os.path.join(env_archive, d))]
-            dates.sort(reverse=True)
+            dates = sorted(dates, reverse=True)
             date_dropdown["values"] = dates
             selected_date.set(dates[0] if dates else "No backups found")
         else:
@@ -172,6 +180,7 @@ def add_manual_environment(environments, env_dropdown, selected_env, date_dropdo
             while unique_name in existing_backup_names:
                 unique_name = f"{base_name}_{counter}"
                 counter += 1
+            existing_backup_names.append(unique_name)
             environments[folder] = {"workspace_dir": workspace_dir, "backup_name": unique_name}
             with open(CONFIG_FILE, "w") as f:
                 json.dump(environments, f, indent=4)
@@ -225,6 +234,7 @@ def main():
     try:
         root = Tk()
         root.withdraw()
+        root.update_idletasks()  # Ensure the root window is properly hidden
         environments = load_or_find_environments(root)
         if not environments:
             messagebox.showerror("No Environments", "No Product 360 installations found. Please install or add manually.", parent=root)
@@ -232,7 +242,8 @@ def main():
             return
         root.destroy()
         create_gui(environments)
-    except Exception as e:
+        logging.error(f"Startup error: {traceback.format_exc()}")
+        messagebox.showerror("Error", f"Failed to start: {e}")
         logging.error(f"Startup error: {traceback.format_exc()}")
         messagebox.showerror("Error", f"Failed to start: {e}")
 
